@@ -9,9 +9,10 @@
     "server": "nodemon app.js",
     "watch": "watchify public/index.js -o public/bundle.js -v"
   },
-  "author": "amir eshaq",
+  "author": "rejola",
   "license": "ISC",
   "dependencies": {
+    "awaitqueue": "^2.4.0",
     "express": "^4.17.1",
     "httpolyglot": "^0.1.2",
     "mediasoup": "^3.8.3",

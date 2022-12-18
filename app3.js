@@ -19,7 +19,11 @@ const { consumers } = require('stream')
 app.get('/', (req, res, next) => {
    res.send(`You need to specify a room name in the path e.g. 'https://127.0.0.1/sfu/room'`)
 })
-app.use('/sfu', express.static(path.join(__dirname, 'public')))
+app.use('/', express.static(path.join(__dirname, 'public')))
+app.get('/consumer/:roomId', (req, res)=>{
+
+    res.sendFile(path.join(__dirname, 'public') + "/index3.html");
+})
 
 // SSL cert for HTTPS access
 const options = {
@@ -31,8 +35,8 @@ const httpsServer = https.createServer(options, app)
 const io = require("socket.io")(httpsServer, {cors: {origin: "*"}});
 
 
-httpsServer.listen(3003, () => {
-  console.log('listening on port: ' + 3003)
+httpsServer.listen(3002, () => {
+  console.log('listening on port: ' + 3002)
 })
 
 const peers = io.of('qllive')

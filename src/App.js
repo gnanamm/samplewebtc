@@ -200,7 +200,7 @@ function App() {
     <div>
       <h1>WEB RTC</h1>
       <video
-        id="localVideo"
+        id="producer"
         style={{ width: 240, height: 240, backgroundColor: "black" }}
         autoPlay
         muted
@@ -208,7 +208,7 @@ function App() {
 
       ></video>
       <video
-        id="localVideo1"
+        id="consumer"
         style={{ width: 240, height: 240, backgroundColor: "black" }}
         autoPlay
         muted
@@ -218,6 +218,8 @@ function App() {
       <button onClick={getLocalStream}>Open camera</button>
       <button onClick={getRtpCapabilities}>Get RTP capabilities</button>
       <button onClick={createDevice}>create Device</button>
+
+
 
       <button onClick={createSendTransport}>Create Transport</button>
       <button onClick={connectSendTransport}>Connect Transport</button>

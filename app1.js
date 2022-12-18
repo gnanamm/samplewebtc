@@ -7,7 +7,6 @@
 const express  = require( 'express')
 const cors   = require( 'cors')
 
-const app = express()
 const  https =  require('httpolyglot')
 const fs =  require('fs')
 const path = require('path')
@@ -16,24 +15,32 @@ const { disconnect } = require('process')
 const { Producer } = require('mediasoup-client/lib/Producer')
 const { Consumer } = require('mediasoup-client/lib/Consumer')
 const { consumers } = require('stream')
-app.get('/', (req, res, next) => {
-   res.send(`You need to specify a room name in the path e.g. 'https://127.0.0.1/sfu/room'`)
-})
-app.use('/sfu', express.static(path.join(__dirname, 'public')))
+const config = require('./config');
+const queue = new AwaitQueue();
 
+const createServer = ()=>{
+    const app = express()
+    app.param('/:roomId', (req, res, next) => {
+        res.send(`You need to specify a room name in the path e.g. 'https://127.0.0.1/sfu/room'`)
+     })
+     app.use('/sfu', express.static(path.join(__dirname, 'public')))
 // SSL cert for HTTPS access
 const options = {
-  key: fs.readFileSync('./server/ssl/key.pem', 'utf-8'),
-  cert: fs.readFileSync('./server/ssl/cert.pem', 'utf-8')
+    key: fs.readFileSync('./server/ssl/key.pem', 'utf-8'),
+    cert: fs.readFileSync('./server/ssl/cert.pem', 'utf-8')
+  }
+  
+  const httpsServer = https.createServer(options, app)
+  const io = require("socket.io")(httpsServer, {cors: {origin: "*"}});
+  
+  
+  httpsServer.listen(3002, () => {
+    console.log('listening on port: ' + 3002)
+  })
+  
 }
 
-const httpsServer = https.createServer(options, app)
-const io = require("socket.io")(httpsServer, {cors: {origin: "*"}});
 
-
-httpsServer.listen(3003, () => {
-  console.log('listening on port: ' + 3003)
-})
 
 const peers = io.of('qllive')
 let worker
@@ -42,24 +49,64 @@ let producerTransport
 let consumerTransport
 let producer
 let consumer
+const rooms = new Map();
+const mediasoupWorkers = [];
+
+let nextMediasoupWorkerIdx = 0;
+
 
 const createWorker = async () => {
-  worker = await mediasoup.createWorker({
-    rtcMinPort: 2000,
-    rtcMaxPort: 2500,
-  })
-  console.log(`worker pid ${worker.pid}`)
+  const { numWorkers } = config.mediasoup;
+  for (let i = 0; i < numWorkers; ++i){
+    worker = await mediasoup.createWorker({
+      rtcMinPort: Number(config.mediasoup.workerSettings.rtcMinPort),
+      rtcMaxPort: Number(config.mediasoup.workerSettings.rtcMaxPort),
+    })
+    console.log(`worker started pid ${worker.pid}`)
 
-  worker.on('died', error => {
-    console.error('mediasoup worker has died')
-    setTimeout(() => process.exit(1), 2000) // exit in 2 seconds
-  })
+    worker.on('died', error => {
+      console.error(`mediasoup worker has died ${worker.pid}`)
+      setTimeout(() => process.exit(1), 2000) // exit in 2 seconds
+    })
+    mediasoupWorkers.push(worker);
+    if (process.env.MEDIASOUP_USE_WEBRTC_SERVER !== 'false')
+		{
+			// Each mediasoup Worker will run its own WebRtcServer, so those cannot
+			// share the same listening ports. Hence we increase the value in config.js
+			// for each Worker.
+			const webRtcServerOptions = utils.clone(config.mediasoup.webRtcServerOptions);
+			const portIncrement = mediasoupWorkers.length - 1;
 
-  return worker
+			for (const listenInfo of webRtcServerOptions.listenInfos)
+			{
+				listenInfo.port += portIncrement;
+			}
+
+			const webRtcServer = await worker.createWebRtcServer(webRtcServerOptions);
+
+			worker.appData.webRtcServer = webRtcServer;
+		}
+
+        // Log worker resource usage every X seconds.
+		setInterval(async () =>
+		{
+			const usage = await worker.getResourceUsage();
+
+			logger.info('mediasoup Worker resource usage [pid:%d]: %o', worker.pid, usage);
+		}, 120000);
+  }
+  
+
+
 }
 
-// We create a Worker as soon as our application starts
-worker = createWorker()
+const init = ()=>{
+    // We create a Worker as soon as our application starts
+    createWorker();
+
+    createServer();
+}
+
 
 
 const mediaCodecs = [
@@ -79,8 +126,15 @@ const mediaCodecs = [
   },
 ]
 
-peers.on('connection', async socket => {
-  console.log(socket.id)
+peers.on('connection', async ({rommId},socket) => {
+  console.log(`RoomId ${roomId}`)
+  console.log(socket.id),
+  queue.push(async ()=>{
+    const room = await getOrCreateRoom({});
+
+  }).catch(error =>{
+    console.log(`queue error ${error}`)
+  })
   socket.emit('connection-success', {
     socketId: socket.id
   })
@@ -90,12 +144,6 @@ peers.on('connection', async socket => {
     console.log('peer disconnected')
   })
 
-  // worker.createRouter(options)
-  // options = { mediaCodecs, appData }
-  // mediaCodecs -> defined above
-  // appData -> custom application data - we are not supplying any
-  // none of the two are required
-  router = await worker.createRouter({ mediaCodecs, })
 
   // Client emits a request for RTP Capabilities
   // This event responds to the request
@@ -253,3 +301,54 @@ const createWebRtcTransport = async (callback) => {
     })
   }
 }
+
+
+
+
+
+async function getOrCreateRoom({ roomId })
+{
+	let room = rooms.get(roomId);
+
+	// If the Room does not exist create a new one.
+	if (!room)
+	{
+        console.log(`Room does not Exists ${roomId}`);
+
+		const mediasoupWorker = getMediasoupWorker();
+
+		room = await createRoom({ mediasoupWorker, roomId });
+
+		rooms.set(roomId, room);
+		room.on('close', () => rooms.delete(roomId));
+	}
+
+	return room;
+}
+
+
+const  getMediasoupWorker = ()=>{
+	const worker = mediasoupWorkers[nextMediasoupWorkerIdx];
+
+	if (++nextMediasoupWorkerIdx === mediasoupWorkers.length)
+		nextMediasoupWorkerIdx = 0;
+
+	return worker;
+}
+const createRoom =  async({ mediasoupWorker, roomId })=>{
+	console.info('create() [roomId:%s]', roomId);
+    const { mediaCodecs } = config.mediasoup.routerOptions;
+    const router = await mediasoupWorker.createRouter({ mediaCodecs })
+
+    const audioLevelObserver = await router.createAudioLevelObserver({
+            maxEntries : 1,
+            threshold  : -80,
+            interval   : 800
+        });
+        const activeSpeakerObserver = await router.createActiveSpeakerObserver();
+        const webRtcServer = mediasoupWorker.appData.webRtcServer;
+
+
+}
+
+
